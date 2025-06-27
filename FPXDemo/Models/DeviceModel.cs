@@ -3,28 +3,36 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using OlympusNDT.Instrumentation.NET;
 using Caliburn.Micro;
 
-
 namespace FPXDemo.Models
 {
-    public class DeviceModel
+    public class DeviceModel : PropertyChangedBase // Caliburn wants this for NotifyOfPropertyChange
     {
         public IDevice device { get; set; }
         public IBeamSet LprobeBeamSet { get; set; }
-
         public IBeamSet RprobeBeamSet { get; set; }
-
         public IBeamSet beamSet { get; set; }
         public IUltrasoundConfiguration ultrasoundConfiguration { get; set; }
         public IDigitizerTechnology digitizerTechnology { get; set; }
         public IAcquisition acquisition { get; set; }
 
+        private List<AscanFrame> _ascanFrames = new List<AscanFrame>();
+        public List<AscanFrame> AscanFrames
+        {
+            get => _ascanFrames;
+            private set
+            {
+                _ascanFrames = value;
+                NotifyOfPropertyChange(() => AscanFrames);
+            }
+        }
 
-        private string _text1 = "Initial Text";
+        private CancellationTokenSource _cts;
 
         public DeviceModel()
         {
@@ -38,21 +46,19 @@ namespace FPXDemo.Models
                 MessageBox.Show("Device is not Found!");
                 return;
             }
-            //MessageBox.Show("Device is Found!");
             DownloadFirmwarePackage();
         }
 
         public void DownloadFirmwarePackage()
         {
             string packageName = "FocusPxPackage-1.3";
-            IFirmwarePackage firmwarePackage;
             IFirmwarePackageCollection firmwarePackages = IFirmwarePackageScanner.GetFirmwarePackageCollection();
-            for (uint i=0; i<firmwarePackages.GetCount(); i++)
+            for (uint i = 0; i < firmwarePackages.GetCount(); i++)
             {
-                if (firmwarePackages.GetFirmwarePackage(i).GetName().Contains(packageName))
+                var pkg = firmwarePackages.GetFirmwarePackage(i);
+                if (pkg.GetName().Contains(packageName))
                 {
-                    firmwarePackage = firmwarePackages.GetFirmwarePackage(i);
-                    device.Start(firmwarePackage);
+                    device.Start(pkg);
                     break;
                 }
             }
@@ -65,126 +71,139 @@ namespace FPXDemo.Models
             digitizerTechnology = ultrasoundConfiguration.GetDigitizerTechnology(UltrasoundTechnology.PhasedArray);
             IBeamSetFactory beamSetFactory = digitizerTechnology.GetBeamSetFactory();
 
-            // Load Lprobe beamset from config1.law
             var lProbeFormations = beamSetFactory.CreateBeamFormationCollectionFromLawFile("config1.law");
             var lProbeBeamSet = beamSetFactory.CreateBeamSetPhasedArray("Lprobe", lProbeFormations);
-            lProbeBeamSet.GetDigitizingSettings()
-                 .GetAmplitudeSettings()
-                 .SetAscanDataSize(IAmplitudeSettings.AscanDataSize.EightBits);
-
+            lProbeBeamSet.GetDigitizingSettings().GetAmplitudeSettings().SetAscanDataSize(IAmplitudeSettings.AscanDataSize.EightBits);
+            lProbeBeamSet.GetDigitizingSettings().GetTimeSettings().SetAscanCompressionFactor(5);
+            lProbeBeamSet.GetPulsingSettings().SetAscanAveragingFactor(IPulsingSettings.AveragingFactor.One);
             lProbeBeamSet.GetDigitizingSettings().GetAmplitudeSettings().SetScalingType(IAmplitudeSettings.ScalingType.Linear);
             lProbeBeamSet.GetDigitizingSettings().GetAmplitudeSettings().SetAscanRectification(IAmplitudeSettings.RectificationType.Full);
-            // Load Rprobe beamset from config2.law
+
             var rProbeFormations = beamSetFactory.CreateBeamFormationCollectionFromLawFile("config2.law");
             var rProbeBeamSet = beamSetFactory.CreateBeamSetPhasedArray("Rprobe", rProbeFormations);
-            rProbeBeamSet.GetDigitizingSettings()
-                 .GetAmplitudeSettings()
-                 .SetAscanDataSize(IAmplitudeSettings.AscanDataSize.EightBits);
+            rProbeBeamSet.GetDigitizingSettings().GetAmplitudeSettings().SetAscanDataSize(IAmplitudeSettings.AscanDataSize.EightBits);
+            rProbeBeamSet.GetDigitizingSettings().GetTimeSettings().SetAscanCompressionFactor(5);
+            rProbeBeamSet.GetPulsingSettings().SetAscanAveragingFactor(IPulsingSettings.AveragingFactor.One);
             rProbeBeamSet.GetDigitizingSettings().GetAmplitudeSettings().SetScalingType(IAmplitudeSettings.ScalingType.Linear);
             rProbeBeamSet.GetDigitizingSettings().GetAmplitudeSettings().SetAscanRectification(IAmplitudeSettings.RectificationType.Full);
-            // Add to the ultrasound configuration
-            IConnector connectorPA = digitizerTechnology.GetConnectorCollection().GetConnector(0); // Adjust connector index if needed
+
+            IConnector connectorPA = digitizerTechnology.GetConnectorCollection().GetConnector(0);
             ultrasoundConfiguration.GetFiringBeamSetCollection().Add(lProbeBeamSet, connectorPA);
             ultrasoundConfiguration.GetFiringBeamSetCollection().Add(rProbeBeamSet, connectorPA);
 
-            MessageBox.Show("Beamsets Lprobe and Rprobe successfully loaded from law files.");
-            int lProbeBeamCount = (int)lProbeBeamSet.GetBeamCount();
-            int rProbeBeamCount = (int)rProbeBeamSet.GetBeamCount();
+            LprobeBeamSet = lProbeBeamSet;
+            RprobeBeamSet = rProbeBeamSet;
 
-            System.Diagnostics.Debug.WriteLine($"Lprobe beam count: {lProbeBeamCount}");
-            System.Diagnostics.Debug.WriteLine($"Rprobe beam count: {rProbeBeamCount}");
+            MessageBox.Show("Beamsets Lprobe and Rprobe successfully loaded from law files.");
+        }
+
+        public double PulserVoltage
+        {
+            get => digitizerTechnology?.GetPulserVoltage() ?? 0;
+            set { digitizerTechnology?.SetPulserVoltage(value); }
         }
 
         public bool SetupAcquisition()
         {
-            if (device == null)
-            {
-                return false;
-            }
+            if (device == null) return false;
 
             try
             {
-                acquisition = IAcquisition.CreateEx(device); // Correctly initialize acquisition using CreateEx method  
-                acquisition.SetFiringTrigger(IAcquisition.FiringTrigger.Internal); // Set the firing trigger using the appropriate method  
+                acquisition = IAcquisition.CreateEx(device);
+                acquisition.SetFiringTrigger(IAcquisition.FiringTrigger.Internal);
                 acquisition.SetRate(60);
                 acquisition.ApplyConfiguration();
                 acquisition.Start();
-
                 return true;
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Acquisition setup failed: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                MessageBox.Show($"Acquisition setup failed: {ex.Message}");
                 return false;
             }
-   
-        
-
-        public void InitiateAcquisition()
-        {
-            if (device == null)
-            {
-                return;
-            }
-            acquisition = IAcquisition.CreateEx(device);
         }
 
-        public ICycleData CollectCycleData()
+        private ICycleData WaitForValidCycleData()
         {
             if (acquisition == null)
-            {
                 return null;
-            }
 
-            var result = acquisition.WaitForDataEx();
-            if (result.status == IAcquisition.WaitForDataResultEx.Status.DataAvailable)
+            using (var result = acquisition.WaitForDataEx())
             {
-                return result.cycleData;
+                return result.status == IAcquisition.WaitForDataResultEx.Status.DataAvailable
+                    ? result.cycleData
+                    : null;
             }
-
-            return null;
         }
 
-        public int[] CollectAscanData()
+
+        public async Task StartAscanLoopAsync(CancellationToken token)
         {
-            if (acquisition == null)
+            _cts = CancellationTokenSource.CreateLinkedTokenSource(token);
+            while (!_cts.Token.IsCancellationRequested)
             {
-                return null;
+                bool success = await Task.Run(() => CollectAllAscanData(), _cts.Token);
+                if (success)
+                    System.Diagnostics.Debug.WriteLine($"[INFO] Collected {_ascanFrames.Count} A-scan frames at {DateTime.Now}");
+                await Task.Delay(50, _cts.Token); // Adjust as needed
             }
-
-            var result = acquisition.WaitForDataEx();
-            if (result.status == IAcquisition.WaitForDataResultEx.Status.DataAvailable)
-            {
-                var cycleData = result.cycleData;
-                var ascan = cycleData.GetAscanCollection().GetAscan(0);
-                int[] ascanData = new int[ascan.GetSampleQuantity()];
-
-                for (int i=0; i<ascan.GetSampleQuantity(); i++)
-                {
-                    ascanData[i] = (int)Marshal.ReadInt32(ascan.GetData(), i * 4);
-                }
-                return ascanData;
-            }
-
-            return null;
         }
 
-        public void ConsumeData()
+        public void StopAscanLoop()
         {
-            try
+            _cts?.Cancel();
+            System.Diagnostics.Debug.WriteLine("[INFO] A-scan loop cancelled.");
+        }
+
+        public bool CollectAllAscanData()
+        {
+            var cycleData = WaitForValidCycleData();
+            if (cycleData == null) return false;
+
+            var ascans = cycleData.GetAscanCollection();
+            if (ascans.GetCount() == 0) return false;
+
+            var frames = new List<AscanFrame>();
+
+            for (uint i = 0; i < ascans.GetCount(); i++)
             {
-                var dataResult = acquisition.WaitForDataEx();
-                while (dataResult.status == IAcquisition.WaitForDataResultEx.Status.DataAvailable)
+                var ascan = ascans.GetAscan(i);
+                int samples = (int)ascan.GetSampleQuantity();
+                int[] signal = new int[samples];
+                Marshal.Copy(ascan.GetData(), signal, 0, samples);
+
+                var timeRange = ascan.GetTimeDataRange();
+                double start = timeRange.GetFloatingMin();
+                double stop = timeRange.GetFloatingMax();
+                double step = (stop - start) / (samples - 1);
+                double[] timeAxis = new double[samples];
+                for (int j = 0; j < samples; j++)
+                    timeAxis[j] = start + j * step;
+
+                uint beamIndex = ascan.GetBeamFiringOrder();
+                IBeam beam = beamIndex < LprobeBeamSet.GetBeamCount()
+                    ? LprobeBeamSet.GetBeam(beamIndex)
+                    : RprobeBeamSet.GetBeam(beamIndex - LprobeBeamSet.GetBeamCount());
+
+                double gain = beam?.GetGain() ?? 0;
+
+                frames.Add(new AscanFrame
                 {
-                    using (var cycleData = dataResult.cycleData)
-                        dataResult = acquisition.WaitForDataEx();
-                }
-                dataResult.Dispose();
+                    BeamIndex = (int)beamIndex,
+                    Gain = gain,
+                    Signal = signal,
+                    TimeAxis = timeAxis
+                });
             }
-            catch (Exception e)
-            {
-                MessageBox.Show(e.ToString());
-            }
+
+            AscanFrames = frames;
+            return true;
+        }
+
+        public void ResetAscans()
+        {
+            AscanFrames = new List<AscanFrame>();
+            System.Diagnostics.Debug.WriteLine("[INFO] Cleared A-scan frames.");
         }
     }
 }
