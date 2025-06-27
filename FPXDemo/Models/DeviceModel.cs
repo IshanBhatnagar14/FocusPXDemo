@@ -6,16 +6,25 @@ using System.Text;
 using System.Threading.Tasks;
 using System.Windows;
 using OlympusNDT.Instrumentation.NET;
+using Caliburn.Micro;
+
 
 namespace FPXDemo.Models
 {
     public class DeviceModel
     {
         public IDevice device { get; set; }
+        public IBeamSet LprobeBeamSet { get; set; }
+
+        public IBeamSet RprobeBeamSet { get; set; }
+
         public IBeamSet beamSet { get; set; }
         public IUltrasoundConfiguration ultrasoundConfiguration { get; set; }
         public IDigitizerTechnology digitizerTechnology { get; set; }
         public IAcquisition acquisition { get; set; }
+
+
+        private string _text1 = "Initial Text";
 
         public DeviceModel()
         {
@@ -49,21 +58,67 @@ namespace FPXDemo.Models
             }
         }
 
-        public void CreatBeamSet()
+        public void CreateBeamSetsFromLawFiles()
         {
             IDeviceConfiguration deviceConfiguration = device.GetConfiguration();
             ultrasoundConfiguration = deviceConfiguration.GetUltrasoundConfiguration();
-            digitizerTechnology = ultrasoundConfiguration.GetDigitizerTechnology(UltrasoundTechnology.Conventional);
+            digitizerTechnology = ultrasoundConfiguration.GetDigitizerTechnology(UltrasoundTechnology.PhasedArray);
             IBeamSetFactory beamSetFactory = digitizerTechnology.GetBeamSetFactory();
-            beamSet = beamSetFactory.CreateBeamSetConventional("Conventional");
+
+            // Load Lprobe beamset from config1.law
+            var lProbeFormations = beamSetFactory.CreateBeamFormationCollectionFromLawFile("config1.law");
+            var lProbeBeamSet = beamSetFactory.CreateBeamSetPhasedArray("Lprobe", lProbeFormations);
+            lProbeBeamSet.GetDigitizingSettings()
+                 .GetAmplitudeSettings()
+                 .SetAscanDataSize(IAmplitudeSettings.AscanDataSize.EightBits);
+
+            lProbeBeamSet.GetDigitizingSettings().GetAmplitudeSettings().SetScalingType(IAmplitudeSettings.ScalingType.Linear);
+            lProbeBeamSet.GetDigitizingSettings().GetAmplitudeSettings().SetAscanRectification(IAmplitudeSettings.RectificationType.Full);
+            // Load Rprobe beamset from config2.law
+            var rProbeFormations = beamSetFactory.CreateBeamFormationCollectionFromLawFile("config2.law");
+            var rProbeBeamSet = beamSetFactory.CreateBeamSetPhasedArray("Rprobe", rProbeFormations);
+            rProbeBeamSet.GetDigitizingSettings()
+                 .GetAmplitudeSettings()
+                 .SetAscanDataSize(IAmplitudeSettings.AscanDataSize.EightBits);
+            rProbeBeamSet.GetDigitizingSettings().GetAmplitudeSettings().SetScalingType(IAmplitudeSettings.ScalingType.Linear);
+            rProbeBeamSet.GetDigitizingSettings().GetAmplitudeSettings().SetAscanRectification(IAmplitudeSettings.RectificationType.Full);
+            // Add to the ultrasound configuration
+            IConnector connectorPA = digitizerTechnology.GetConnectorCollection().GetConnector(0); // Adjust connector index if needed
+            ultrasoundConfiguration.GetFiringBeamSetCollection().Add(lProbeBeamSet, connectorPA);
+            ultrasoundConfiguration.GetFiringBeamSetCollection().Add(rProbeBeamSet, connectorPA);
+
+            MessageBox.Show("Beamsets Lprobe and Rprobe successfully loaded from law files.");
+            int lProbeBeamCount = (int)lProbeBeamSet.GetBeamCount();
+            int rProbeBeamCount = (int)rProbeBeamSet.GetBeamCount();
+
+            System.Diagnostics.Debug.WriteLine($"Lprobe beam count: {lProbeBeamCount}");
+            System.Diagnostics.Debug.WriteLine($"Rprobe beam count: {rProbeBeamCount}");
         }
 
-        public void BindConnector()
+        public bool SetupAcquisition()
         {
-            // Create a connetor at P1/R1 with index 4
-            IConnector connector = digitizerTechnology.GetConnectorCollection().GetConnector(4);
-            ultrasoundConfiguration.GetFiringBeamSetCollection().Add(beamSet, connector);
-        }
+            if (device == null)
+            {
+                return false;
+            }
+
+            try
+            {
+                acquisition = IAcquisition.CreateEx(device); // Correctly initialize acquisition using CreateEx method  
+                acquisition.SetFiringTrigger(IAcquisition.FiringTrigger.Internal); // Set the firing trigger using the appropriate method  
+                acquisition.SetRate(60);
+                acquisition.ApplyConfiguration();
+                acquisition.Start();
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Acquisition setup failed: {ex.Message}", "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                return false;
+            }
+   
+        
 
         public void InitiateAcquisition()
         {
