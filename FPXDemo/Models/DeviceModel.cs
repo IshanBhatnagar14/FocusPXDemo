@@ -122,11 +122,11 @@ namespace FPXDemo.Models
         }
 
 
-        public double PulserVoltage
-        {
-            get => digitizerTechnology?.GetPulserVoltage() ?? 0;
-            set { digitizerTechnology?.SetPulserVoltage(value); }
-        }
+        //public double PulserVoltage
+        //{
+        //    get => digitizerTechnology?.GetPulserVoltage() ?? 0;
+        //    set { digitizerTechnology?.SetPulserVoltage(value); }
+        //}
 
         public bool ValidateBeforeAcquisition()
         {
@@ -416,6 +416,16 @@ namespace FPXDemo.Models
                     RprobeBeamSet.GetBeam(i).SetGainEx(newGain);
             }
         }
+
+        public void CommitBeamSettings()
+        {
+            if (acquisition != null)
+            {
+                acquisition.ApplyConfiguration();
+                Debug.WriteLine("[INFO] Acquisition configuration applied.");
+            }
+        }
+
 
     }
 }
